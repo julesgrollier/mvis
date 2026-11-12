@@ -1,0 +1,17 @@
+# bonds.tsv - bonds to DRAW for molecules whose topology bonds look wrong
+#
+# One line per residue name:   RESNAME   MODE   BEAD-BEAD BEAD-BEAD ...
+#
+# MODE  replace   forget the bonds of the file for this residue, draw these
+#       add       keep the bonds of the file, draw these too
+#
+# These bonds are for the picture only; they say nothing about the force
+# field. Beads are given by name; a pair with a bead the residue does not
+# have is skipped.
+#
+# Martini 3 cholesterol: ROH, R3, R4, R5 and R6 are virtual sites, so the
+# topology has no bond for them (they float), and its three constraints
+# R1-R2-C1 are long diagonals. Drawn instead: the fused rings as a ladder
+# ROH / R1 R2 / R3 R4 / C1, the two methyl beads R5 and R6 as stubs, and
+# the tail C1-C2. Nearest neighbours in the model geometry (0.25-0.45 nm).
+CHOL   replace   ROH-R1 ROH-R2 R1-R2 R1-R3 R2-R4 R3-R4 R3-C1 R4-C1 C1-C2 R2-R5 R4-R6

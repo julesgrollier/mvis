@@ -1,0 +1,63 @@
+# molecules.tsv - which residue is what, and its colour
+#
+# One line per rule:   PATTERN   CLASS   RED GREEN BLUE   (0 to 1)
+#
+# PATTERN is compared with the residue name (* = any characters, ? = one).
+# The FIRST line that matches wins: put exact names above general patterns.
+# All residues of one CLASS share one colour (that of the first line of the
+# class). At most 16 classes can have their own colour.
+#
+# Classes with a special meaning:
+#   water, ion   hidden unless asked for; their colour here is used
+#   sterol       drawn as a rigid ring, without head/tail distinction
+# Any other class name is free (it is only a label): the molecule is drawn
+# as heads + tails. Tail beads are those named like C1A, D2B, T1A.
+# A residue matching no line is drawn the same way, coloured by VMD.
+
+# ---- water and ions
+W        water     0.55 0.75 0.95
+WF       water     0.55 0.75 0.95
+PW       water     0.55 0.75 0.95
+SW       water     0.55 0.75 0.95
+TW       water     0.55 0.75 0.95
+NA       ion       0.95 0.80 0.20
+NA+      ion       0.95 0.80 0.20
+TNA      ion       0.95 0.80 0.20
+CA       ion       0.95 0.80 0.20
+CL       ion       0.35 0.80 0.35
+CL-      ion       0.35 0.80 0.35
+TCL      ion       0.35 0.80 0.35
+ION      ion       0.95 0.80 0.20
+
+# ---- sterols
+CHOL     sterol    0.95 0.75 0.10
+CHOX     sterol    0.95 0.75 0.10
+ERG      sterol    0.95 0.75 0.10
+
+# ---- ionizable and cationic lipids (LNP); H at the end = protonated
+*MC3H    ionizable+  0.85 0.15 0.45
+*KC2H    ionizable+  0.85 0.15 0.45
+*DMAH    ionizable+  0.85 0.15 0.45
+*DAPH    ionizable+  0.85 0.15 0.45
+*DAH     ionizable+  0.85 0.15 0.45
+*MC      ionizable   0.95 0.60 0.75
+*KC2     ionizable   0.95 0.60 0.75
+*DMA     ionizable   0.95 0.60 0.75
+DLDAP    ionizable   0.95 0.60 0.75
+DLDA     ionizable   0.95 0.60 0.75
+DOTAP    cationic    0.60 0.10 0.30
+
+# ---- sphingolipids
+*SM      SM        0.55 0.35 0.75
+*CER     ceramide  0.75 0.60 0.90
+
+# ---- glycerophospholipids, by head group
+??PC     PC        0.20 0.45 0.80
+??PE     PE        0.15 0.65 0.60
+??PS     PS        0.85 0.35 0.15
+??PG     PG        0.45 0.70 0.25
+??PA     PA        0.60 0.40 0.20
+??PI     PI        0.80 0.25 0.25
+??P1     PI        0.80 0.25 0.25
+??P2     PI        0.80 0.25 0.25
+??P3     PI        0.80 0.25 0.25

@@ -1,0 +1,573 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# mvis - open a Martini trajectory in VMD, nicely rendered
+# ==============================================================================
+#
+#   mvis prep STRUCTURE [TRAJECTORY]   on the machine with GROMACS: writes the
+#                                      files VMD needs into visualization/
+#   mvis STRUCTURE [TRAJECTORY]        on the machine with VMD: opens them
+#   mvis update                        fetch the newest version (zip)
+#
+# Written for bash 3.2 as well (macOS). Help: mvis -h
+# ==============================================================================
+
+set -o nounset -o pipefail
+
+PROGRAM="mvis"
+
+# ---- where the package is (this file may be reached through a symlink) -------
+
+self="${BASH_SOURCE[0]}"
+while [ -L "$self" ]; do
+    target="$(readlink "$self")"
+    case "$target" in
+        /*) self="$target" ;;
+        *)  self="$(dirname "$self")/$target" ;;
+    esac
+done
+ROOT="$(cd "$(dirname "$self")/.." && pwd -P)"
+VERSION="$(cat "$ROOT/VERSION" 2> /dev/null || echo unknown)"
+
+# ---- settings: defaults, then the config file --------------------------------
+
+CONFIG="${MVIS_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/mvis/config}"
+DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/mvis"
+
+VMD=""                          # VMD program; empty: looked for (find_vmd)
+GMX_SETUP=""                    # commands that load GROMACS if gmx is not on the PATH
+MARTINIGLASS=""                 # martiniglass program; empty: looked for
+REPO="julesgrollier/mvis"       # GitHub repository of "mvis update"
+STYLE="default"                 # style when -style is not given
+
+# shellcheck disable=SC1090
+[ -f "$CONFIG" ] && . "$CONFIG"
+
+OUT_NAME="visualization"        # folder written next to the structure
+
+
+usage()
+{
+    cat <<EOF
+mvis $VERSION - open a Martini trajectory in VMD, nicely rendered
+
+  1. where GROMACS is (cluster), in the simulation folder:
+       $PROGRAM prep STRUCTURE [TRAJECTORY] [OPTIONS]
+  2. where VMD is (laptop), same folder (mounted) and same file names:
+       $PROGRAM STRUCTURE [TRAJECTORY] [OPTIONS]
+
+Example:
+  $PROGRAM prep 03_equilibrate.pdb 03_equilibrate.xtc
+  $PROGRAM 03_equilibrate.pdb 03_equilibrate.xtc
+
+STRUCTURE is a .pdb or .gro file, TRAJECTORY a .xtc or .trr file. prep
+writes only into the folder $OUT_NAME/ next to STRUCTURE; your files
+are never changed. Without a mount: copy that folder to the laptop and
+run $PROGRAM on the files inside it.
+
+$PROGRAM prep STRUCTURE [TRAJECTORY]
+  -s FILE      run input file (.tpr)     (default: STRUCTURE's name + .tpr)
+  -n FILE      index file                (default: index.ndx next to STRUCTURE)
+  -pbc LEVEL   none, whole or mol        (default: mol = whole molecules,
+               centred on -cg, molecules back in the box)
+  -cg GROUP    index group to centre on  (default: Lipids)
+  -skip N      keep every N-th frame     (default: 1 = all)
+  -glass       also run MartiniGlass (for proteins: elastic network, ...)
+  -p FILE      topology for -glass       (default: topol.top next to STRUCTURE)
+  -yes         do not ask before overwriting / writing into store
+
+$PROGRAM STRUCTURE [TRAJECTORY]
+  -style NAME  default, tails, heads or figure       (default: $STYLE)
+  -water       show the water                        (default: hidden)
+  -ions        show the ions                         (default: hidden)
+  -step N      load every N-th frame                 (default: 1 = all)
+  -smooth N    smooth the motion over 2N+1 frames    (default: 0 = off)
+  -noglass     ignore MartiniGlass files, use the bonds of the .pdb
+  -dry         only print what would be opened
+  Style, water and ions can be changed afterwards in the VMD window
+  Extensions > Visualization > mvis.
+
+Other:
+  $PROGRAM update [-version TAG]   replace this installation by the newest
+                             version of github.com/$REPO (or by a tag)
+  $PROGRAM config            show the settings in use and where they come from
+  $PROGRAM -h | -version
+
+Options can also be written with two dashes (--style tails).
+Settings (VMD path, how to load GROMACS, default style): $CONFIG
+EOF
+}
+
+die()
+{
+    echo "ERROR: $*" >&2
+    exit 1
+}
+
+usage_error()
+{
+    echo "ERROR: $*" >&2
+    echo "Try: $PROGRAM -h" >&2
+    exit 192
+}
+
+note()
+{
+    echo "$PROGRAM: $*" >&2
+}
+
+absolute_path()
+{
+    # Usage: absolute_path FILE   (the folder of FILE must exist)
+    echo "$(cd "$(dirname "$1")" && pwd -P)/$(basename "$1")"
+}
+
+need_value()
+{
+    # Usage: need_value OPTION NUMBER_OF_ARGUMENTS_LEFT
+    [ "$2" -ge 2 ] || usage_error "$1 needs a value."
+}
+
+whole_number()
+{
+    # Usage: whole_number OPTION VALUE MINIMUM
+    case "$2" in
+        ""|*[!0-9]*) usage_error "$1 must be a whole number, got: $2" ;;
+    esac
+    [ "$2" -ge "$3" ] || usage_error "$1 must be at least $3, got: $2"
+}
+
+check_inputs()
+{
+    # Usage: check_inputs   (uses $structure, $trajectory)
+    [ -n "$structure" ] || usage_error "no structure file given."
+    [ -f "$structure" ] || die "File not found: $structure"
+    case "$structure" in
+        *.pdb|*.gro) ;;
+        *) usage_error "the structure must be a .pdb or .gro file: $structure" ;;
+    esac
+    [ -z "$trajectory" ] && return
+    [ -f "$trajectory" ] || die "File not found: $trajectory"
+    case "$trajectory" in
+        *.xtc|*.trr) ;;
+        *) usage_error "the trajectory must be a .xtc or .trr file: $trajectory" ;;
+    esac
+}
+
+take_file()
+{
+    # Usage: take_file FILE   (first: structure, second: trajectory)
+    if [ -z "$structure" ]; then
+        structure="$1"
+    elif [ -z "$trajectory" ]; then
+        trajectory="$1"
+    else
+        usage_error "too many files: $1 (give a structure, then a trajectory)"
+    fi
+}
+
+
+# ==============================================================================
+# mvis prep
+# ==============================================================================
+
+find_martiniglass()
+{
+    if [ -n "$MARTINIGLASS" ]; then
+        [ -x "$MARTINIGLASS" ] || die "MARTINIGLASS in $CONFIG is not a program: $MARTINIGLASS"
+    elif command -v martiniglass > /dev/null; then
+        MARTINIGLASS="$(command -v martiniglass)"
+    elif [ -x "$DATA_DIR/venv/bin/martiniglass" ]; then
+        MARTINIGLASS="$DATA_DIR/venv/bin/martiniglass"
+    else
+        die "MartiniGlass not found. Install it with: bash $ROOT/install.sh -glass"
+    fi
+}
+
+run_martiniglass()
+{
+    # Usage: run_martiniglass TOPOLOGY FOLDER
+    # MartiniGlass writes into the current folder, reads the #include files
+    # relative to it and stops on files without a molecule coming first
+    # (martini_v3.0.0.itp, ...). So it gets, inside FOLDER, a copy of the
+    # .top with absolute #include paths, molecules first, the force field
+    # definition left out. Afterwards vis.top is made relative so that
+    # FOLDER can be mounted or copied anywhere.
+    local topology="$1" folder="$2" topDir work line file
+
+    topDir="$(cd "$(dirname "$topology")" && pwd -P)"
+    work="$folder.tmp.$$"
+    rm -rf "$work"
+    mkdir "$work" || die "Cannot write $work"
+
+    : > "$work/molecules.inc"
+    : > "$work/defines.inc"
+    : > "$work/rest.top"
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in
+            \#include*)
+                file="$(echo "$line" | sed 's/^#include[[:space:]]*"\(.*\)".*$/\1/')"
+                case "$file" in
+                    /*) ;;
+                    *) file="$topDir/$file" ;;
+                esac
+                [ -f "$file" ] || { rm -rf "$work"; die "$topology includes a missing file: $file"; }
+                if grep -q '^\[ *moleculetype *\]' "$file"; then
+                    echo "#include \"$file\"" >> "$work/molecules.inc"
+                elif grep -q -e '^\[ *defaults *\]' -e '^\[ *atomtypes *\]' "$file"; then
+                    :       # force field definition: not needed for bonds
+                else
+                    echo "#include \"$file\"" >> "$work/defines.inc"
+                fi
+                ;;
+            *)
+                echo "$line" >> "$work/rest.top"
+                ;;
+        esac
+    done < "$topology"
+    cat "$work/molecules.inc" "$work/defines.inc" "$work/rest.top" > "$work/staged.top"
+    rm "$work/molecules.inc" "$work/defines.inc" "$work/rest.top"
+
+    if ! (cd "$work" && "$MARTINIGLASS" -p staged.top -vf > martiniglass.log 2>&1); then
+        cat "$work/martiniglass.log" >&2
+        rm -rf "$work"
+        die "MartiniGlass failed (output above). The bonds of the .pdb are" \
+            "still there: $PROGRAM works without -glass."
+    fi
+    [ -f "$work/vis.top" ] || { rm -rf "$work"; die "MartiniGlass wrote no vis.top."; }
+
+    sed 's|^#include[[:space:]]*".*/\([^/"]*\)"|#include "\1"|' "$work/vis.top" \
+        > "$work/vis.top.new" && mv "$work/vis.top.new" "$work/vis.top"
+    rm -f "$work/staged.top"
+
+    rm -rf "$folder"
+    mv "$work" "$folder" || die "Cannot write $folder"
+}
+
+command_prep()
+{
+    local structure="" trajectory="" tpr="" index="" topology=""
+    local pbc="mol" centerGroup="Lipids" skip=1 glass=no assumeYes=no
+    local option
+
+    while [ $# -gt 0 ]; do
+        option="$1"
+        case "$option" in --?*) option="${option#-}" ;; esac
+        case "$option" in
+            -h|-help)  usage; exit 0 ;;
+            -s)        need_value "$1" $#; tpr="$2"; shift ;;
+            -n)        need_value "$1" $#; index="$2"; shift ;;
+            -p)        need_value "$1" $#; topology="$2"; shift ;;
+            -pbc)      need_value "$1" $#; pbc="$2"; shift ;;
+            -cg)       need_value "$1" $#; centerGroup="$2"; shift ;;
+            -skip)     need_value "$1" $#; skip="$2"; shift ;;
+            -glass)    glass=yes ;;
+            -y|-yes)   assumeYes=yes ;;
+            -*)        usage_error "unknown option of prep: $1" ;;
+            *)         take_file "$1" ;;
+        esac
+        shift
+    done
+
+    check_inputs
+    whole_number -skip "$skip" 1
+    case "$pbc" in
+        none|whole|mol) ;;
+        *) usage_error "-pbc must be none, whole or mol, got: $pbc" ;;
+    esac
+    if [ -n "$trajectory" ] && [ "$pbc" = none ]; then
+        usage_error "-pbc none cannot be used with a trajectory: use -pbc whole."
+    fi
+
+    local dir base outDir
+    dir="$(dirname "$structure")"
+    base="$(basename "${structure%.*}")"
+    outDir="$dir/$OUT_NAME"
+
+    local tprNote="" indexNote="" topologyNote=""
+    if [ -z "$tpr" ]; then
+        tpr="$dir/$base.tpr"
+        tprNote="   (default: name of the structure; other file: -s)"
+    fi
+    if [ -z "$index" ]; then
+        index="$dir/index.ndx"
+        indexNote="   (default; other file: -n)"
+    fi
+    if [ -z "$topology" ]; then
+        topology="$dir/topol.top"
+        topologyNote="   (default; other file: -p)"
+    fi
+    [ -f "$tpr" ] || die "Run input file not found: $tpr$tprNote"
+    [ -f "$index" ] || die "Index file not found: $index$indexNote"
+    if [ "$glass" = yes ]; then
+        [ -f "$topology" ] || die "Topology not found: $topology$topologyNote"
+        find_martiniglass
+    fi
+
+    note "structure   $structure"
+    note "trajectory  ${trajectory:-none}"
+    note "run input   $tpr$tprNote"
+    note "index       $index$indexNote"
+    if [ "$pbc" = mol ]; then
+        note "periodic    -pbc mol, centred on $centerGroup   (defaults; -pbc, -cg)"
+    else
+        note "periodic    -pbc $pbc"
+    fi
+    [ "$skip" -gt 1 ] && note "frames      1 out of $skip (-skip)"
+    [ "$glass" = yes ] && note "MartiniGlass $topology$topologyNote"
+    note "output      $outDir/"
+
+    mkdir -p "$outDir" || die "Cannot create $outDir"
+
+    local arguments
+    arguments=( -s "$tpr" -n "$index" -pbc "$pbc" -cg "$centerGroup" -skip "$skip"
+                -c "$structure" -oc "$outDir/$base.pdb" )
+    if [ -n "$trajectory" ]; then
+        arguments+=( -f "$trajectory" -o "$outDir/$(basename "$trajectory")" )
+    fi
+    [ "$assumeYes" = yes ] && arguments+=( -yes )
+
+    local written
+    written="$(MVIS_GMX_SETUP="$GMX_SETUP" bash "$ROOT/libexec/martini_conect.sh" "${arguments[@]}")" \
+        || exit $?
+
+    local atoms
+    atoms="$(grep -c -e '^ATOM' -e '^HETATM' "$outDir/$base.pdb")"
+    if [ "$atoms" -gt 99999 ]; then
+        note "WARNING: $atoms atoms. The atom numbers of a .pdb stop at 99999," \
+             "so its bond records (CONECT) are not reliable for this system:" \
+             "check the bonds in VMD."
+    fi
+
+    if [ "$glass" = yes ]; then
+        run_martiniglass "$topology" "$outDir/${base}_glass"
+        written="$written
+$outDir/${base}_glass/"
+    fi
+
+    note "wrote:"
+    echo "$written"
+    note "now, where VMD is:  $PROGRAM $structure${trajectory:+ $trajectory}"
+}
+
+
+# ==============================================================================
+# mvis STRUCTURE [TRAJECTORY]
+# ==============================================================================
+
+find_vmd()
+{
+    if [ -n "$VMD" ]; then
+        [ -x "$VMD" ] || die "VMD in $CONFIG is not a program: $VMD"
+        return
+    fi
+    if command -v vmd > /dev/null; then
+        VMD="$(command -v vmd)"
+        return
+    fi
+    local candidate
+    for candidate in /Applications/VMD*.app/Contents/MacOS/startup.command \
+                     "$HOME"/Applications/VMD*.app/Contents/MacOS/startup.command; do
+        [ -x "$candidate" ] && VMD="$candidate"       # the last = the newest name
+    done
+    [ -n "$VMD" ] || die "VMD not found. Write its path in $CONFIG, e.g.
+  VMD=\"/Applications/VMD 1.9.4a57-arm64-Rev12.app/Contents/MacOS/startup.command\"
+(or run: bash $ROOT/install.sh)"
+}
+
+command_view()
+{
+    local structure="" trajectory="" style="$STYLE"
+    local water=0 ions=0 step=1 smooth=0 useGlass=yes dry=no
+    local option
+
+    while [ $# -gt 0 ]; do
+        option="$1"
+        case "$option" in --?*) option="${option#-}" ;; esac
+        case "$option" in
+            -h|-help)   usage; exit 0 ;;
+            -style)     need_value "$1" $#; style="$2"; shift ;;
+            -step)      need_value "$1" $#; step="$2"; shift ;;
+            -smooth)    need_value "$1" $#; smooth="$2"; shift ;;
+            -water)     water=1 ;;
+            -ions)      ions=1 ;;
+            -noglass)   useGlass=no ;;
+            -dry)       dry=yes ;;
+            -*)         usage_error "unknown option: $1" ;;
+            *)          take_file "$1" ;;
+        esac
+        shift
+    done
+
+    check_inputs
+    whole_number -step "$step" 1
+    whole_number -smooth "$smooth" 0
+    case "$style" in
+        default|tails|heads|figure) ;;
+        *) usage_error "-style must be default, tails, heads or figure, got: $style" ;;
+    esac
+
+    # The prepared files: in visualization/ next to the structure, or the
+    # given files themselves when they are prepared ones (copied folder).
+    local dir base prepared preparedTrajectory="" prepCommand
+    dir="$(dirname "$structure")"
+    base="$(basename "${structure%.*}")"
+    prepCommand="$PROGRAM prep $structure${trajectory:+ $trajectory}"
+
+    if [ -f "$dir/$OUT_NAME/$base.pdb" ]; then
+        prepared="$dir/$OUT_NAME/$base.pdb"
+        [ "$structure" -nt "$prepared" ] \
+            && note "WARNING: $structure is newer than $prepared: run prep again?"
+        if [ -n "$trajectory" ]; then
+            preparedTrajectory="$(dirname "$trajectory")/$OUT_NAME/$(basename "$trajectory")"
+            [ -f "$preparedTrajectory" ] \
+                || die "$preparedTrajectory not found: the trajectory was not prepared.
+Where GROMACS is, run:  $prepCommand"
+            [ "$trajectory" -nt "$preparedTrajectory" ] \
+                && note "WARNING: $trajectory is newer than $preparedTrajectory" \
+                        "(run still going on?): run prep again to see the new frames."
+        fi
+    elif [ "${structure##*.}" = pdb ] && grep -q '^CONECT' "$structure"; then
+        prepared="$structure"
+        preparedTrajectory="$trajectory"
+    else
+        die "$structure is not prepared (no $dir/$OUT_NAME/$base.pdb).
+Where GROMACS is, run:  $prepCommand"
+    fi
+
+    local glassDir=""
+    if [ "$useGlass" = yes ]; then
+        glassDir="$(dirname "$prepared")/${base}_glass"
+        [ -f "$glassDir/vis.top" ] && [ -f "$glassDir/cg_bonds-v6.tcl" ] || glassDir=""
+    fi
+
+    note "structure   $prepared"
+    note "trajectory  ${preparedTrajectory:-none}"
+    if [ -n "$glassDir" ]; then
+        note "bonds       MartiniGlass ($glassDir; -noglass: those of the .pdb)"
+    else
+        note "bonds       CONECT records of the .pdb"
+    fi
+    note "style       $style   (others: default, tails, heads, figure; -style)"
+    note "shown       water: $([ $water = 1 ] && echo yes || echo "no (-water)")," \
+         "ions: $([ $ions = 1 ] && echo yes || echo "no (-ions)")"
+    [ "$step" -gt 1 ] && note "frames      1 out of $step (-step)"
+    [ "$smooth" -gt 0 ] && note "smoothing   $smooth (-smooth)"
+
+    [ "$dry" = yes ] && { note "(-dry: VMD not started)"; exit 0; }
+
+    find_vmd
+    # Everything goes to VMD through the environment: no long command line,
+    # no trouble with spaces in paths.
+    MVIS_PDB="$(absolute_path "$prepared")"
+    MVIS_TRAJECTORY=""
+    [ -n "$preparedTrajectory" ] && MVIS_TRAJECTORY="$(absolute_path "$preparedTrajectory")"
+    MVIS_GLASS=""
+    [ -n "$glassDir" ] && MVIS_GLASS="$(absolute_path "$glassDir")"
+    export MVIS_PDB MVIS_TRAJECTORY MVIS_GLASS
+    export MVIS_STYLE="$style" MVIS_WATER="$water" MVIS_IONS="$ions"
+    export MVIS_STEP="$step" MVIS_SMOOTH="$smooth"
+    export MVIS_PRESETS="$(dirname "$CONFIG")"
+    exec "$VMD" -e "$ROOT/tcl/mvis.tcl"
+}
+
+
+# ==============================================================================
+# mvis update, mvis config
+# ==============================================================================
+
+command_update()
+{
+    local tag="" option url work top
+    while [ $# -gt 0 ]; do
+        option="$1"
+        case "$option" in --?*) option="${option#-}" ;; esac
+        case "$option" in
+            -version) need_value "$1" $#; tag="$2"; shift ;;
+            *)        usage_error "unknown option of update: $1" ;;
+        esac
+        shift
+    done
+
+    [ -e "$ROOT/.git" ] && die "$ROOT is a git repository: update it with git pull."
+    [ -f "$ROOT/VERSION" ] && [ -f "$ROOT/bin/mvis" ] && [ -d "$ROOT/tcl" ] \
+        || die "$ROOT does not look like an mvis installation: nothing done."
+    command -v curl > /dev/null || die "curl is needed for the download."
+    command -v unzip > /dev/null || die "unzip is needed."
+
+    if [ -n "$tag" ]; then
+        url="https://github.com/$REPO/archive/refs/tags/$tag.zip"
+    else
+        url="https://github.com/$REPO/archive/refs/heads/main.zip"
+    fi
+    url="${MVIS_ZIP_URL:-$url}"
+
+    work="$(mktemp -d "${ROOT%/}.update.XXXXXX")" || die "Cannot write next to $ROOT"
+    note "downloading $url"
+    if ! curl -fsSL -o "$work/mvis.zip" "$url"; then
+        rm -rf "$work"
+        die "Download failed: $url"
+    fi
+    if ! unzip -q "$work/mvis.zip" -d "$work/unpacked"; then
+        rm -rf "$work"
+        die "Could not unpack the downloaded file."
+    fi
+    # The zip of GitHub holds one folder (repository-branch).
+    top="$(find "$work/unpacked" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+    if [ -z "$top" ] || [ ! -f "$top/VERSION" ] || [ ! -f "$top/bin/mvis" ]; then
+        rm -rf "$work"
+        die "The downloaded file is not an mvis package: nothing changed."
+    fi
+    chmod +x "$top/bin/mvis" "$top/install.sh" 2> /dev/null
+
+    # Swap the folders: the old one is removed only when the new one is in place.
+    mv "$ROOT" "$work/old" || { rm -rf "$work"; die "Cannot move $ROOT"; }
+    if ! mv "$top" "$ROOT"; then
+        mv "$work/old" "$ROOT"
+        rm -rf "$work"
+        die "Could not put the new version in place: the old one is kept."
+    fi
+    note "updated $ROOT: $VERSION -> $(cat "$ROOT/VERSION")"
+    rm -rf "$work"
+    exit 0
+}
+
+command_config()
+{
+    echo "mvis $VERSION in $ROOT"
+    if [ -f "$CONFIG" ]; then
+        echo "config file: $CONFIG"
+    else
+        echo "config file: $CONFIG (not there: defaults; bash $ROOT/install.sh writes it)"
+    fi
+    echo "  VMD=$VMD${VMD:+   }$([ -z "$VMD" ] && echo "   (empty: vmd on the PATH, else /Applications/VMD*.app)")"
+    echo "  GMX_SETUP=$GMX_SETUP$([ -z "$GMX_SETUP" ] && echo "   (empty: gmx must be on the PATH for prep)")"
+    echo "  MARTINIGLASS=$MARTINIGLASS$([ -z "$MARTINIGLASS" ] && echo "   (empty: PATH, else $DATA_DIR/venv)")"
+    echo "  REPO=$REPO"
+    echo "  STYLE=$STYLE"
+    local name
+    for name in molecules.tsv bonds.tsv; do
+        if [ -f "$(dirname "$CONFIG")/$name" ]; then
+            echo "$name: $(dirname "$CONFIG")/$name (your own copy)"
+        else
+            echo "$name: $ROOT/presets/$name (own copy: put one in $(dirname "$CONFIG")/)"
+        fi
+    done
+}
+
+
+# ==============================================================================
+
+# The braces make bash read the whole file before running it: "update"
+# replaces this file while it runs.
+{
+    [ $# -gt 0 ] || { usage; exit 192; }
+    case "$1" in
+        -h|-help|--help|help)   usage ;;
+        -version|--version)     echo "mvis $VERSION" ;;
+        prep)                   shift; command_prep "$@" ;;
+        update)                 shift; command_update "$@" ;;
+        config)                 shift; command_config ;;
+        *)                      command_view "$@" ;;
+    esac
+    exit 0
+}
