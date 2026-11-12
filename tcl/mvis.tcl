@@ -4,6 +4,7 @@
 #
 # Started by bin/mvis (vmd -e mvis.tcl), which passes everything through
 # environment variables:
+#   MVIS_ROOT        the package folder                        (required)
 #   MVIS_PDB         structure with CONECT records            (required)
 #   MVIS_TRAJECTORY  trajectory to load on it                 (may be empty)
 #   MVIS_GLASS       folder written by MartiniGlass           (may be empty)
@@ -21,7 +22,14 @@
 # ==============================================================================
 
 namespace eval ::mvis {
-    variable root [file dirname [file dirname [file normalize [info script]]]]
+    # The package folder. bin/mvis gives it in MVIS_ROOT: VMD does not tell
+    # a script started with "vmd -e" where it is ([info script] is empty).
+    variable root
+    if {[info exists ::env(MVIS_ROOT)] && $::env(MVIS_ROOT) ne ""} {
+        set root $::env(MVIS_ROOT)
+    } else {
+        set root [file dirname [file dirname [file normalize [info script]]]]
+    }
     variable mol -1
     variable style default
     variable showWater 0
@@ -36,7 +44,9 @@ namespace eval ::mvis {
     variable firstColor 17      ;# colour numbers 17-32 are redefined
     variable lastColor 32
     variable beadRadius 2.35    ;# Angstrom; VDW representations scale it
-    variable tailNames {"[CDT][0-9]+[A-Z]"}
+    # Tail beads, by name: C1A D2B T1A (Martini 3 lipids), and CA1 CB2 CBX
+    # (ionizable lipids such as SM-102).
+    variable tailNames {"[CDT][0-9]+[A-Z]" "C[A-Z][0-9X]"}
 }
 
 proc ::mvis::say {text} {
@@ -336,7 +346,7 @@ proc ::mvis::start {} {
     ::mvis::window
 }
 
-source [file join [file dirname [info script]] styles.tcl]
-source [file join [file dirname [info script]] window.tcl]
+source [file join $::mvis::root tcl styles.tcl]
+source [file join $::mvis::root tcl window.tcl]
 
 ::mvis::start

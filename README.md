@@ -42,9 +42,17 @@ prepare. No Python environment (only the optional MartiniGlass needs one).
 
 4. Check: `mvis config` shows the settings in use, `mvis -h` the help.
 
+**Nothing in the home folder** (clusters where home is small or off
+limits): `bash install.sh -local`. The settings then go to a folder next to
+the installation, named after it with `_settings` (for `~/tools/mvis`:
+`~/tools/mvis_settings`), and the link goes to the first folder of your
+PATH outside the home folder that you can write to (or `-bin FOLDER`).
+That folder is kept by `mvis update`. Wherever this README says
+`~/.config/mvis`, read that folder instead.
+
 Optional, on the cluster, for `mvis prep -glass`:
 `bash install.sh -glass` installs MartiniGlass 1.1.3 in its own environment
-(`~/.local/share/mvis/venv`).
+(`~/.local/share/mvis/venv`, or the `_settings` folder with `-local`).
 
 ### Update
 
@@ -167,8 +175,9 @@ MartiniGlass itself writes there.
   records are not reliable (`prep` warns). Not solved yet.
 - `-glass` handles `#include` lines of the `.top` itself, not nested
   includes or `#ifdef` blocks around them.
-- Lipid tails are recognised by bead name (`C1A`, `D2B`, `T1A`, ...);
-  other bead names are drawn as head beads.
+- Lipid tails are recognised by bead name (`C1A`, `D2B`, `T1A`, and
+  `CA1`, `CB2`, `CBX` for ionizable lipids); other bead names are drawn as
+  head beads.
 - The installation folder must not have spaces in its path.
 
 ## Tests

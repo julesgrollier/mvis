@@ -30,8 +30,21 @@ VERSION="$(cat "$ROOT/VERSION" 2> /dev/null || echo unknown)"
 
 # ---- settings: defaults, then the config file --------------------------------
 
-CONFIG="${MVIS_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/mvis/config}"
-DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/mvis"
+# Where the settings are, first that applies:
+#   1. the file named by MVIS_CONFIG
+#   2. the folder NAME_settings next to the installation folder NAME, if it
+#      exists (made by "install.sh -local": nothing in the home folder)
+#   3. ~/.config/mvis  (MartiniGlass then in ~/.local/share/mvis)
+if [ -n "${MVIS_CONFIG:-}" ]; then
+    CONFIG="$MVIS_CONFIG"
+    DATA_DIR="$(dirname "$CONFIG")"
+elif [ -d "${ROOT}_settings" ]; then
+    CONFIG="${ROOT}_settings/config"
+    DATA_DIR="${ROOT}_settings"
+else
+    CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/mvis/config"
+    DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/mvis"
+fi
 
 VMD=""                          # VMD program; empty: looked for (find_vmd)
 GMX_SETUP=""                    # commands that load GROMACS if gmx is not on the PATH
@@ -467,6 +480,7 @@ Where GROMACS is, run:  $prepCommand"
     export MVIS_STYLE="$style" MVIS_WATER="$water" MVIS_IONS="$ions"
     export MVIS_STEP="$step" MVIS_SMOOTH="$smooth"
     export MVIS_PRESETS="$(dirname "$CONFIG")"
+    export MVIS_ROOT="$ROOT"
     exec "$VMD" -e "$ROOT/tcl/mvis.tcl"
 }
 

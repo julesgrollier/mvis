@@ -11,7 +11,8 @@
 #   water, ion   hidden unless asked for; their colour here is used
 #   sterol       drawn as a rigid ring, without head/tail distinction
 # Any other class name is free (it is only a label): the molecule is drawn
-# as heads + tails. Tail beads are those named like C1A, D2B, T1A.
+# as heads + tails. Tail beads are those named like C1A, D2B, T1A, or
+# like CA1, CB2, CBX (ionizable lipids).
 # A residue matching no line is drawn the same way, coloured by VMD.
 
 # ---- water and ions
@@ -35,11 +36,14 @@ CHOX     sterol    0.95 0.75 0.10
 ERG      sterol    0.95 0.75 0.10
 
 # ---- ionizable and cationic lipids (LNP); H at the end = protonated
+# (S12 = SM-102 protonated, S1D = SM-102 neutral)
+S12      ionizable+  0.85 0.15 0.45
 *MC3H    ionizable+  0.85 0.15 0.45
 *KC2H    ionizable+  0.85 0.15 0.45
 *DMAH    ionizable+  0.85 0.15 0.45
 *DAPH    ionizable+  0.85 0.15 0.45
 *DAH     ionizable+  0.85 0.15 0.45
+S1D      ionizable   0.95 0.60 0.75
 *MC      ionizable   0.95 0.60 0.75
 *KC2     ionizable   0.95 0.60 0.75
 *DMA     ionizable   0.95 0.60 0.75
