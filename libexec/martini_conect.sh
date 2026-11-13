@@ -240,7 +240,7 @@ if ! command -v gmx > /dev/null; then
                "that load it in MVIS_GMX_SETUP (see -h)."
     # Site scripts are usually not written for "set -u": paused.
     set +u
-    eval "$MVIS_GMX_SETUP"
+    eval "$MVIS_GMX_SETUP" > /dev/null 2>&1     # (module messages not shown)
     set -u
     command -v gmx > /dev/null \
         || die "Still no gmx after running MVIS_GMX_SETUP: $MVIS_GMX_SETUP"

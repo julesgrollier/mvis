@@ -1,7 +1,15 @@
 # Stand-ins for the VMD commands used by tcl/*.tcl, to run them in tclsh.
 # The "molecule" is read from the .pdb in MVIS_PDB (atoms + CONECT); every
 # VMD command is logged in ::log. Selections understand only what the test
-# needs: all, and resname "X".
+# needs: all, resname "X" and index N N ....
+# For the cylinder (test_cylinder.tcl): ::frame and ::numframes are what
+# molinfo answers, graphics keeps what is drawn in ::drawn (id -> command),
+# representations have names (mol repname / repindex / modselect).
+set ::frame 0
+set ::numframes 11
+set ::drawn [dict create]
+set ::graphicsId -1
+set ::repCounter 0
 set ::log {}
 set ::reps {}
 proc logcmd {args} { lappend ::log $args }
@@ -18,8 +26,14 @@ proc read_pdb {path} {
             set ::bonds($i) {}
             incr i
         } elseif {[string match CONECT* $line]} {
-            set a $::serial([lindex $line 1])
-            foreach other [lrange $line 2 end] {
+            # columns of 5 characters (they touch from atom 10000 on)
+            set numbers {}
+            for {set column 6} {$column < [string length $line]} {incr column 5} {
+                set number [string trim [string range $line $column [expr {$column + 4}]]]
+                if {$number ne ""} { lappend numbers $number }
+            }
+            set a $::serial([lindex $numbers 0])
+            foreach other [lrange $numbers 1 end] {
                 set b $::serial($other)
                 if {$b ni $::bonds($a)} { lappend ::bonds($a) $b }
                 if {$a ni $::bonds($b)} { lappend ::bonds($b) $a }
@@ -43,6 +57,8 @@ proc atomselect {mol text} {
         foreach atom $::atoms { lappend picked [lindex $atom 0] }
     } elseif {[regexp {^resname "(.*)"$} $text -> resname]} {
         foreach atom $::atoms { if {[lindex $atom 2] eq $resname} { lappend picked [lindex $atom 0] } }
+    } elseif {[regexp {^index (.*)$} $text -> indices]} {
+        set picked $indices
     } else { error "stub: selection not understood: $text" }
     set name sel[incr ::selcount]
     set ::picked($name) $picked
@@ -68,14 +84,37 @@ proc mol {sub args} {
     logcmd mol $sub {*}$args
     switch $sub {
         new { read_pdb [lindex $args 0]; return 0 }
-        addrep { lappend ::reps [list $::cur(selection) $::cur(representation) $::cur(color) $::cur(material)] }
-        delrep { set ::reps [lreplace $::reps 0 0] }
+        addrep { lappend ::reps [list $::cur(selection) $::cur(representation) $::cur(color) $::cur(material) rep[incr ::repCounter]] }
+        delrep { set ::reps [lreplace $::reps [lindex $args 0] [lindex $args 0]] }
+        repname { return [lindex [lindex $::reps [lindex $args 1]] 4] }
+        repindex {
+            set number 0
+            foreach rep $::reps {
+                if {[lindex $rep 4] eq [lindex $args 1]} { return $number }
+                incr number
+            }
+            return -1
+        }
+        modselect { lset ::reps [lindex $args 0] 0 [list [lindex $args 2]] }
         representation - color - selection - material { set ::cur($sub) $args }
     }
     return
 }
 proc molinfo {mol get what} {
-    switch $what { numreps { return [llength $::reps] } numframes { return 11 } }
+    switch $what {
+        numreps { return [llength $::reps] }
+        numframes { return $::numframes }
+        frame { return $::frame }
+    }
 }
-proc colorinfo {what} { set out {}; for {set i 0} {$i < 33} {incr i} { lappend out color$i }; return $out }
+proc colorinfo {what} {
+    switch $what { num { return 33 } max { return 1057 } }
+    set out {}; for {set i 0} {$i < 33} {incr i} { lappend out color$i }; return $out
+}
+proc graphics {mol sub args} {
+    if {$sub eq "delete"} { dict unset ::drawn [lindex $args 0]; return }
+    if {$sub in {color material materials}} { set ::pen($sub) $args; return }
+    dict set ::drawn [incr ::graphicsId] [list $sub {*}$args color $::pen(color)]
+    return $::graphicsId
+}
 foreach command {color display axes animate} { proc $command {args} "logcmd $command {*}\$args" }

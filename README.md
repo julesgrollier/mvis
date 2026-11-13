@@ -83,6 +83,7 @@ mvis prep STRUCTURE [TRAJECTORY]
 | `-pbc LEVEL` | `none` (coordinates untouched), `whole` (molecules made whole), `mol` (whole, centred, molecules back in the box) | `mol` |
 | `-cg GROUP` | index group put in the centre of the box | `Lipids` |
 | `-skip N` | keep 1 frame out of N (smaller file for a slow connection) | `1` |
+| `-cylinder FILE` | chain coordinate runs: the `NAME_cylinder.xvg` to prepare (see "The chain coordinate cylinder") | the one next to the trajectory or the structure, if any |
 | `-glass` | also run MartiniGlass (see below) | off |
 | `-p FILE` | topology for `-glass` | `topol.top` next to the structure |
 | `-yes` | do not ask before overwriting | ask |
@@ -94,6 +95,8 @@ visualization/
   03_equilibrate.pdb          structure with its bonds (CONECT records)
   03_equilibrate.xtc          matching trajectory
   03_equilibrate_glass/       only with -glass
+  03_equilibrate_cylinder.xvg, _slices.dat, _frames.dat, _cylinder_beads.ndx
+                              only for a run with cylinder files
 ```
 
 ### 2. View (laptop)
@@ -118,6 +121,7 @@ cd sim_vis && mvis 03_equilibrate.pdb 03_equilibrate.xtc
 | `-ions` | show the ions | hidden |
 | `-step N` | load 1 frame out of N | `1` |
 | `-smooth N` | smooth the motion over 2N+1 frames | `0` |
+| `-cylinder` | draw the chain coordinate cylinder of each frame (see below) | not drawn |
 | `-noglass` | ignore MartiniGlass files | used if present |
 | `-dry` | only print what would be opened | |
 
@@ -133,7 +137,63 @@ Styles:
 | `figure` | as `default`, on white, with shadows and ambient occlusion (for rendering) |
 
 In VMD, the window **mvis** (also under Extensions > Visualization > mvis)
-switches style, water, ions and smoothing.
+switches style, water, ions and smoothing (and the cylinder, when its
+files were prepared).
+
+## The chain coordinate cylinder (`-cylinder`)
+
+For runs biased along the chain coordinate (stalk formation): the cylinder
+mdrun used is drawn at every frame, where it was at that time.
+
+```bash
+mvis prep 07_pull.pdb 07_pull.xtc         # finds 07_pull_cylinder.xvg
+mvis 07_pull.pdb 07_pull.xtc -cylinder
+```
+
+Drawn: the tube (transparent), a disc for each slice that is filled
+(blue = empty, white = half, red = full), a line of text (time, xi,
+1/(s2+c2) in x and y, frozen or free), and as orange spheres the beads of
+the index group `Apolar` that are inside the tube.
+
+`prep` needs two files of the run, next to the trajectory or the structure
+and named after one of them (else: `-cylinder FILE`):
+
+- `NAME_cylinder.xvg`: one line per table mdrun printed: time (ps), xi,
+  centre x y z (nm), 1/(s2+c2) x and y, dxy, frozen (0/1; may be missing).
+  One header line is read:
+  `# Cylinder: N slices of D nm (z), radius R nm ...`
+  (and `frozen at x/y X/Y nm` in it, for the text).
+- `NAME_slices.dat`: same times: time, z of the cylinder bottom (nm), the
+  filling of each slice (0 to 1), bottom slice first.
+
+In martini-LNP, `scripts/cylinder_output.sh` writes both. `prep` copies
+them into `visualization/`, with the beads group of the index file (other
+group: `CYLINDER_GROUP="..."` in the settings file) and a file
+`TRAJECTORY_frames.dat`, see below. Run `prep` again after the cylinder
+files or the trajectory changed.
+
+### Where it is drawn
+
+mdrun gives the cylinder in the coordinates of the original trajectory.
+`prep` makes molecules whole and, by default, centres every frame: the
+atoms are then elsewhere (in the test run: up to 2.6 nm in z). So `prep`
+measures, for every frame it writes, by how much it moved the atoms: it
+follows 5 atoms in the original and in the prepared trajectory, checks
+that all were moved by the same vector (up to whole box lengths; if not,
+no cylinder file is written) and writes time and shift of the frame to
+`TRAJECTORY_frames.dat`. The cylinder of a frame is drawn at
+
+    position given by mdrun + shift of that frame
+
+brought into the box, and at each periodic image that reaches into the
+box (x, y and z). This holds for `-pbc whole` and `-pbc mol`, any `-cg`,
+`-skip` and `-step`: frames and tables are paired by their time. A frame
+without a table within half a table interval shows no cylinder.
+
+Limits: rectangular boxes only. The cylinder is drawn sharp at the
+positions of the frame; with smoothing on, the beads are averaged over
+several frames and the cylinder is not. The beads inside are marked in
+VMD's `beta` field.
 
 ## Change colours, classes and drawn bonds
 
@@ -188,6 +248,15 @@ for the VMD commands and prints the bonds and representations:
 ```bash
 MVIS_PDB=visualization/03_equilibrate.pdb tclsh tests/test_tcl.tcl
 ```
+
+`tests/test_cylinder.tcl` prints, in the same way, where the cylinder
+would be drawn at given frames and which beads are inside;
+`tests/check_cylinder.py` finds the beads inside the cylinder from the
+original trajectory and mdrun's numbers alone. The two lists must be the
+same (usage in both files). Checked like this on a 07 pull (centred, and
+centred on a bead in a box corner so that the tube crosses the box edges
+in x, y and z) and on an 08 window with a moving cylinder (`-pbc whole`,
+`-skip 4`, `-step 3`): identical lists at every frame tried.
 
 ## Citations
 

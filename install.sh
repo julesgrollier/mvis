@@ -136,6 +136,10 @@ VMD="$vmd"
 
 # Style used when -style is not given: default, tails, heads or figure.
 #STYLE="default"
+
+# Index group whose beads are shown when inside the chain coordinate
+# cylinder ("mvis prep" on a run with cylinder files).
+#CYLINDER_GROUP="Apolar"
 CONFIG_END
     echo "2. settings: $CONFIG written"
 fi

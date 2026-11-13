@@ -133,6 +133,7 @@ proc ::mvis::apply_style {name} {
         mol smoothrep $mol $number $smooth
     }
     show_water_and_ions
+    show_cylinder               ;# its beads and text follow the style
 }
 
 proc ::mvis::show_water_and_ions {} {

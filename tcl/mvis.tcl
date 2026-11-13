@@ -13,6 +13,9 @@
 #   MVIS_STEP        load every N-th frame
 #   MVIS_SMOOTH      smoothing window of the representations
 #   MVIS_PRESETS     folder with your own molecules.tsv / bonds.tsv (optional)
+#   MVIS_CYLINDER    path prefix of the cylinder files (cylinder.tcl), if
+#                    they were prepared                      (may be empty)
+#   MVIS_CYLINDER_SHOW   1 = the cylinder is drawn from the start
 #
 # Bonds: VMD's own guess from distances is switched off (it is meaningless
 # for coarse-grained beads). The bonds are those of the file (CONECT, i.e.
@@ -331,6 +334,8 @@ proc ::mvis::start {} {
         MVIS_IONS showIons 0
         MVIS_STEP step 1
         MVIS_SMOOTH smooth 0
+        MVIS_CYLINDER cylinderPrefix ""
+        MVIS_CYLINDER_SHOW cylinderShow 0
     } {
         if {[info exists env($name)] && $env($name) ne ""} {
             set $variableName $env($name)
@@ -342,11 +347,16 @@ proc ::mvis::start {} {
     read_presets
     load $env(MVIS_PDB) $trajectory $glass $step
     ::mvis::apply_style $style
+    if {$cylinderPrefix ne "" && [::mvis::cylinder_load $cylinderPrefix $step]} {
+        set ::mvis::showCylinder $cylinderShow
+        ::mvis::show_cylinder
+    }
     display resetview
     ::mvis::window
 }
 
 source [file join $::mvis::root tcl styles.tcl]
+source [file join $::mvis::root tcl cylinder.tcl]
 source [file join $::mvis::root tcl window.tcl]
 
 ::mvis::start

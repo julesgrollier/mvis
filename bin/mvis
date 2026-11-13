@@ -51,6 +51,7 @@ GMX_SETUP=""                    # commands that load GROMACS if gmx is not on th
 MARTINIGLASS=""                 # martiniglass program; empty: looked for
 REPO="julesgrollier/mvis"       # GitHub repository of "mvis update"
 STYLE="default"                 # style when -style is not given
+CYLINDER_GROUP="Apolar"         # index group shown when inside the cylinder
 
 # shellcheck disable=SC1090
 [ -f "$CONFIG" ] && . "$CONFIG"
@@ -84,6 +85,9 @@ $PROGRAM prep STRUCTURE [TRAJECTORY]
                centred on -cg, molecules back in the box)
   -cg GROUP    index group to centre on  (default: Lipids)
   -skip N      keep every N-th frame     (default: 1 = all)
+  -cylinder FILE  chain coordinate runs: the cylinder file to prepare for
+               "$PROGRAM ... -cylinder"  (default: NAME_cylinder.xvg next to
+               the trajectory or the structure, if there is one)
   -glass       also run MartiniGlass (for proteins: elastic network, ...)
   -p FILE      topology for -glass       (default: topol.top next to STRUCTURE)
   -yes         do not ask before overwriting / writing into store
@@ -94,6 +98,8 @@ $PROGRAM STRUCTURE [TRAJECTORY]
   -ions        show the ions                         (default: hidden)
   -step N      load every N-th frame                 (default: 1 = all)
   -smooth N    smooth the motion over 2N+1 frames    (default: 0 = off)
+  -cylinder    draw the chain coordinate cylinder of each frame (needs the
+               cylinder files, see prep; also a box in the VMD window)
   -noglass     ignore MartiniGlass files, use the bonds of the .pdb
   -dry         only print what would be opened
   Style, water and ions can be changed afterwards in the VMD window
@@ -260,6 +266,7 @@ command_prep()
 {
     local structure="" trajectory="" tpr="" index="" topology=""
     local pbc="mol" centerGroup="Lipids" skip=1 glass=no assumeYes=no
+    local cylinder="" cylinderNote=""
     local option
 
     while [ $# -gt 0 ]; do
@@ -273,6 +280,7 @@ command_prep()
             -pbc)      need_value "$1" $#; pbc="$2"; shift ;;
             -cg)       need_value "$1" $#; centerGroup="$2"; shift ;;
             -skip)     need_value "$1" $#; skip="$2"; shift ;;
+            -cylinder) need_value "$1" $#; cylinder="$2"; shift ;;
             -glass)    glass=yes ;;
             -y|-yes)   assumeYes=yes ;;
             -*)        usage_error "unknown option of prep: $1" ;;
@@ -316,6 +324,29 @@ command_prep()
         find_martiniglass
     fi
 
+    # Chain coordinate cylinder: NAME_cylinder.xvg and NAME_slices.dat.
+    local slices="" candidate
+    if [ -n "$cylinder" ]; then
+        [ -n "$trajectory" ] || usage_error "-cylinder needs a trajectory."
+        case "$cylinder" in
+            *_cylinder.xvg) ;;
+            *) usage_error "-cylinder: the file must be named NAME_cylinder.xvg, got: $cylinder" ;;
+        esac
+        [ -f "$cylinder" ] || die "File not found: $cylinder"
+    elif [ -n "$trajectory" ]; then
+        for candidate in "${trajectory%.*}_cylinder.xvg" "$dir/${base}_cylinder.xvg"; do
+            if [ -f "$candidate" ]; then
+                cylinder="$candidate"
+                cylinderNote="   (found; other file: -cylinder)"
+                break
+            fi
+        done
+    fi
+    if [ -n "$cylinder" ]; then
+        slices="${cylinder%_cylinder.xvg}_slices.dat"
+        [ -f "$slices" ] || die "$cylinder has no $slices next to it."
+    fi
+
     note "structure   $structure"
     note "trajectory  ${trajectory:-none}"
     note "run input   $tpr$tprNote"
@@ -327,6 +358,7 @@ command_prep()
     fi
     [ "$skip" -gt 1 ] && note "frames      1 out of $skip (-skip)"
     [ "$glass" = yes ] && note "MartiniGlass $topology$topologyNote"
+    [ -n "$cylinder" ] && note "cylinder    $cylinder$cylinderNote"
     note "output      $outDir/"
 
     mkdir -p "$outDir" || die "Cannot create $outDir"
@@ -338,6 +370,15 @@ command_prep()
         arguments+=( -f "$trajectory" -o "$outDir/$(basename "$trajectory")" )
     fi
     [ "$assumeYes" = yes ] && arguments+=( -yes )
+
+    # Cylinder files of an earlier prep describe the frames of the
+    # trajectory written then (times, shifts): never kept.
+    local cylinderPrefix=""
+    if [ -n "$trajectory" ]; then
+        cylinderPrefix="$outDir/$(basename "${trajectory%.*}")"
+        rm -f "${cylinderPrefix}_cylinder.xvg" "${cylinderPrefix}_slices.dat" \
+              "${cylinderPrefix}_frames.dat" "${cylinderPrefix}_cylinder_beads.ndx"
+    fi
 
     local written
     written="$(MVIS_GMX_SETUP="$GMX_SETUP" bash "$ROOT/libexec/martini_conect.sh" "${arguments[@]}")" \
@@ -351,6 +392,35 @@ command_prep()
              "check the bonds in VMD."
     fi
 
+    if [ -n "$cylinder" ]; then
+        # The shift of every frame first: without it the cylinder cannot be
+        # placed, and the other files are not written.
+        MVIS_GMX_SETUP="$GMX_SETUP" bash "$ROOT/libexec/frame_shifts.sh" \
+            -s "$tpr" -f "$trajectory" -p "$outDir/$(basename "$trajectory")" \
+            -natoms "$atoms" -skip "$skip" -o "${cylinderPrefix}_frames.dat" \
+            || die "The cylinder files were not prepared (the rest is there)."
+        cp "$cylinder" "${cylinderPrefix}_cylinder.xvg" \
+            && cp "$slices" "${cylinderPrefix}_slices.dat" \
+            || die "Cannot write into $outDir"
+        written="$written
+${cylinderPrefix}_cylinder.xvg
+${cylinderPrefix}_slices.dat
+${cylinderPrefix}_frames.dat"
+        # The beads to show inside the cylinder: one group of the index file.
+        awk -v group="$CYLINDER_GROUP" '
+            /^[[:space:]]*\[/ { inside = ($2 == group); if (inside) print; next }
+            inside { print }
+        ' "$index" > "${cylinderPrefix}_cylinder_beads.ndx"
+        if [ -s "${cylinderPrefix}_cylinder_beads.ndx" ]; then
+            written="$written
+${cylinderPrefix}_cylinder_beads.ndx"
+        else
+            rm -f "${cylinderPrefix}_cylinder_beads.ndx"
+            note "no group $CYLINDER_GROUP in $index: the beads inside the" \
+                 "cylinder will not be shown (CYLINDER_GROUP in $CONFIG)"
+        fi
+    fi
+
     if [ "$glass" = yes ]; then
         run_martiniglass "$topology" "$outDir/${base}_glass"
         written="$written
@@ -359,7 +429,7 @@ $outDir/${base}_glass/"
 
     note "wrote:"
     echo "$written"
-    note "now, where VMD is:  $PROGRAM $structure${trajectory:+ $trajectory}"
+    note "now, where VMD is:  $PROGRAM $structure${trajectory:+ $trajectory}${cylinder:+ -cylinder}"
 }
 
 
@@ -390,7 +460,7 @@ find_vmd()
 command_view()
 {
     local structure="" trajectory="" style="$STYLE"
-    local water=0 ions=0 step=1 smooth=0 useGlass=yes dry=no
+    local water=0 ions=0 step=1 smooth=0 useGlass=yes dry=no showCylinder=0
     local option
 
     while [ $# -gt 0 ]; do
@@ -403,6 +473,7 @@ command_view()
             -smooth)    need_value "$1" $#; smooth="$2"; shift ;;
             -water)     water=1 ;;
             -ions)      ions=1 ;;
+            -cylinder)  showCylinder=1 ;;
             -noglass)   useGlass=no ;;
             -dry)       dry=yes ;;
             -*)         usage_error "unknown option: $1" ;;
@@ -453,6 +524,29 @@ Where GROMACS is, run:  $prepCommand"
         [ -f "$glassDir/vis.top" ] && [ -f "$glassDir/cg_bonds-v6.tcl" ] || glassDir=""
     fi
 
+    # Cylinder files of the prepared trajectory (written by prep).
+    local cylinderPrefix="" cylinderMissing="" file
+    if [ -n "$preparedTrajectory" ]; then
+        cylinderPrefix="${preparedTrajectory%.*}"
+        for file in "${cylinderPrefix}_cylinder.xvg" "${cylinderPrefix}_slices.dat" \
+                    "${cylinderPrefix}_frames.dat"; do
+            [ -f "$file" ] || cylinderMissing="no $file"
+        done
+        if [ -z "$cylinderMissing" ] \
+                && [ "$preparedTrajectory" -nt "${cylinderPrefix}_frames.dat" ]; then
+            cylinderMissing="${cylinderPrefix}_frames.dat is older than the trajectory"
+        fi
+    else
+        cylinderMissing="no trajectory"
+    fi
+    [ -n "$cylinderMissing" ] && cylinderPrefix=""
+    if [ "$showCylinder" = 1 ] && [ -z "$cylinderPrefix" ]; then
+        die "-cylinder: the cylinder files are not prepared ($cylinderMissing).
+They are made from NAME_cylinder.xvg and NAME_slices.dat of the run. Where
+GROMACS is, run:  $prepCommand
+(it takes them if they are next to the trajectory; else: prep -cylinder FILE)"
+    fi
+
     note "structure   $prepared"
     note "trajectory  ${preparedTrajectory:-none}"
     if [ -n "$glassDir" ]; then
@@ -465,6 +559,11 @@ Where GROMACS is, run:  $prepCommand"
          "ions: $([ $ions = 1 ] && echo yes || echo "no (-ions)")"
     [ "$step" -gt 1 ] && note "frames      1 out of $step (-step)"
     [ "$smooth" -gt 0 ] && note "smoothing   $smooth (-smooth)"
+    if [ "$showCylinder" = 1 ]; then
+        note "cylinder    ${cylinderPrefix}_cylinder.xvg"
+    elif [ -n "$cylinderPrefix" ]; then
+        note "cylinder    not drawn (-cylinder, or the box in the VMD window)"
+    fi
 
     [ "$dry" = yes ] && { note "(-dry: VMD not started)"; exit 0; }
 
@@ -479,6 +578,10 @@ Where GROMACS is, run:  $prepCommand"
     export MVIS_PDB MVIS_TRAJECTORY MVIS_GLASS
     export MVIS_STYLE="$style" MVIS_WATER="$water" MVIS_IONS="$ions"
     export MVIS_STEP="$step" MVIS_SMOOTH="$smooth"
+    MVIS_CYLINDER=""
+    [ -n "$cylinderPrefix" ] && MVIS_CYLINDER="$(absolute_path "${cylinderPrefix}_cylinder.xvg")" \
+        && MVIS_CYLINDER="${MVIS_CYLINDER%_cylinder.xvg}"
+    export MVIS_CYLINDER MVIS_CYLINDER_SHOW="$showCylinder"
     export MVIS_PRESETS="$(dirname "$CONFIG")"
     export MVIS_ROOT="$ROOT"
     exec "$VMD" -e "$ROOT/tcl/mvis.tcl"
@@ -558,6 +661,7 @@ command_config()
     echo "  MARTINIGLASS=$MARTINIGLASS$([ -z "$MARTINIGLASS" ] && echo "   (empty: PATH, else $DATA_DIR/venv)")"
     echo "  REPO=$REPO"
     echo "  STYLE=$STYLE"
+    echo "  CYLINDER_GROUP=$CYLINDER_GROUP"
     local name
     for name in molecules.tsv bonds.tsv; do
         if [ -f "$(dirname "$CONFIG")/$name" ]; then

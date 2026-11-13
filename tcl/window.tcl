@@ -32,6 +32,12 @@ proc ::mvis::window {} {
     checkbutton .mvis.show.ions -text "ions" -anchor w \
         -variable ::mvis::showIons -command ::mvis::show_water_and_ions
     pack .mvis.show.water .mvis.show.ions -side top -fill x
+    if {$::mvis::cylinder ne ""} {
+        # only when the cylinder files were prepared (cylinder.tcl)
+        checkbutton .mvis.show.cylinder -text "cylinder" -anchor w \
+            -variable ::mvis::showCylinder -command ::mvis::show_cylinder
+        pack .mvis.show.cylinder -side top -fill x
+    }
 
     labelframe .mvis.smooth -text "Smoothing (frames)" -padx 8 -pady 4
     # (a spinbox: VMD has its own "scale" command, which hides Tk's slider)
