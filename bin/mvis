@@ -82,7 +82,8 @@ $PROGRAM prep STRUCTURE [TRAJECTORY]
   -s FILE      run input file (.tpr)     (default: STRUCTURE's name + .tpr)
   -n FILE      index file                (default: index.ndx next to STRUCTURE)
   -pbc LEVEL   none, whole or mol        (default: mol = whole molecules,
-               centred on -cg, molecules back in the box)
+               centre of mass of -cg held still in the middle of the
+               box, molecules back in the box)
   -cg GROUP    index group to centre on  (default: Lipids)
   -skip N      keep every N-th frame     (default: 1 = all)
   -cylinder FILE  chain coordinate runs: the cylinder file to prepare for

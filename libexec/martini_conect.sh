@@ -44,9 +44,11 @@ How far the coordinates are changed (each level includes the ones before):
               gain here: -f is not allowed.
   -pbc whole  Molecules broken over the box edges are made whole
               (trjconv -pbc whole). Nothing is moved or centred.
-  -pbc mol    (default, the full process) Then the centre group is put in
-              the middle of the box and every molecule back into the box
-              as a whole (trjconv -pbc mol -center -ur compact).
+  -pbc mol    (default, the full process) Then the centre of mass of the
+              centre group is held still in the middle of the box, and
+              every molecule is put back into the box as a whole
+              (trjconv -pbc nojump -fit translation, -pbc mol -ur
+              compact; see "Centring" in the code for why not -center).
   Use none or whole when a later script moves or cuts the structure
   itself, or when positions must stay comparable with the raw files
   (mol shifts everything by the centring).
@@ -271,6 +273,119 @@ run_trjconv()
     die "gmx trjconv failed (output above)."
 }
 
+
+# ---- centring (-pbc mol) -----------------------------------------------------
+#
+# Not trjconv -center: it puts the middle of the group's extent (half-way
+# between its outermost atoms) in the middle of the box, recomputed in
+# every frame from the coordinates as they are, broken over the box edges.
+# For a membrane spanning the box laterally, the outermost lipids change
+# all the time: the whole picture shakes by up to ~0.5 nm between frames.
+# For a membrane touching a box face, lipids of it sit on either side of
+# the box: the whole picture jumps by nm (6 nm in a stalk run).
+#
+# Instead, the centre of mass of the group is followed continuously and
+# kept in place:
+#   1. first frame: the centre of the group on the periodic box (a mean of
+#      angles, so a group split over the box edges gets its true centre),
+#      moved to the middle of the box, molecules whole and in the box
+#      (-trans, -pbc mol): the group is in one piece there;
+#   2. every frame unwrapped from that first one (-pbc nojump) and moved
+#      so that the centre of mass of the group stays where it is
+#      (-fit translation): no jump, whatever crosses the box edges;
+#   3. that centre moved to the middle of the mean box, molecules back
+#      into the box of each frame (-trans, -pbc mol -ur compact).
+# Each step moves all atoms of a frame by one vector, and molecules by
+# whole box vectors: frame_shifts.sh still applies. Works for any box
+# shape. With a box that changes a lot (pressure coupling right after a
+# change), the group stays still and the box edges move around it.
+
+run_traj()
+{
+    # Usage: run_traj GROUP gmx-traj OPTIONS...
+    local group="$1"
+    shift
+    printf '%s\n' "$group" | gmx traj -s "$tpr" -n "$index" "$@" \
+        > "$workDir/gmx.out" 2>&1 && return
+    cat "$workDir/gmx.out" >&2
+    die "gmx traj failed (output above)."
+}
+
+centre_on_group()
+{
+    # Usage: centre_on_group INPUT OUTPUT [OPTIONS of the first pass, -skip]
+    # INPUT and OUTPUT: a trajectory or a structure (one frame). Molecules
+    # need not be whole in INPUT.
+    local input="$1" output="$2" extension="${2##*.}" move
+    shift 2
+
+    # 1. Periodic centre of the group in the first frame.
+    run_trjconv "$centerGroup" -f "$input" -dump 0 -o "$workDir/first.gro"
+    move=$(awk '
+        NR == 2 { n = $1 + 0 }
+        NR > 2 && NR <= n + 2 {
+            x[NR] = substr($0, 21, 8) + 0
+            y[NR] = substr($0, 29, 8) + 0
+            z[NR] = substr($0, 37, 8) + 0
+        }
+        NR == n + 3 {
+            # box vectors a = (ax,0,0), b = (bx,by,0), c = (cx,cy,cz);
+            # .gro: ax by cz [0 0 bx 0 cx cy]
+            ax = $1; by = $2; cz = $3; bx = $6 + 0; cx = $8 + 0; cy = $9 + 0
+        }
+        END {
+            if (n < 1 || ax <= 0 || by <= 0 || cz <= 0) exit 1
+            pi = atan2(0, -1)
+            for (i = 3; i <= n + 2; i++) {
+                # fractional coordinates, as angles on the circle
+                sz = z[i] / cz
+                sy = (y[i] - sz * cy) / by
+                sx = (x[i] - sz * cx - sy * bx) / ax
+                ca += cos(2 * pi * sx); sa += sin(2 * pi * sx)
+                cb += cos(2 * pi * sy); sb += sin(2 * pi * sy)
+                cc += cos(2 * pi * sz); sc += sin(2 * pi * sz)
+            }
+            # centre, in fractions of the box vectors (between -0.5 and 0.5)
+            fa = atan2(sa, ca) / (2 * pi)
+            fb = atan2(sb, cb) / (2 * pi)
+            fc = atan2(sc, cc) / (2 * pi)
+            # shift = middle of the box - centre
+            printf "%.4f %.4f %.4f\n", (0.5 - fa) * ax + (0.5 - fb) * bx + (0.5 - fc) * cx,
+                                       (0.5 - fb) * by + (0.5 - fc) * cy,
+                                       (0.5 - fc) * cz
+        }
+    ' "$workDir/first.gro") || die "Could not read the first frame of $input."
+    run_trjconv "System" -f "$input" -o "$workDir/start.$extension" \
+        -trans $move -pbc mol "$@"
+
+    # 2. Unwrapped, centre of mass of the group held where it is.
+    run_trjconv "$centerGroup System" -f "$workDir/start.$extension" \
+        -o "$workDir/fit.$extension" -pbc nojump -fit translation
+    rm "$workDir/start.$extension"
+
+    # 3. That centre (same in all frames: the first one is read) to the
+    #    middle of the mean box, molecules back into the box.
+    run_traj "$centerGroup" -f "$workDir/fit.$extension" -com \
+        -ox "$workDir/centre.xvg" -ob "$workDir/box.xvg"
+    move=$(awk '
+        /^[#@]/ { next }
+        FNR == NR { if (!done) { x = $2; y = $3; z = $4; done = 1 }; next }
+        {   # box: XX YY ZZ [YX ZX ZY]
+            n++; xx += $2; yy += $3; zz += $4; yx += $5; zx += $6; zy += $7
+        }
+        END {
+            if (!done || n < 1) exit 1
+            printf "%.4f %.4f %.4f\n", (xx + yx + zx) / (2 * n) - x,
+                                       (yy + zy) / (2 * n) - y,
+                                       zz / (2 * n) - z
+        }
+    ' "$workDir/centre.xvg" "$workDir/box.xvg") \
+        || die "Could not read the centre of $centerGroup."
+    run_trjconv "System" -f "$workDir/fit.$extension" -o "$output" \
+        -trans $move -pbc mol -ur compact
+    rm "$workDir/fit.$extension"
+}
+
 restore_pdb_labels()
 {
     # Usage: restore_pdb_labels REFERENCE.pdb TARGET.pdb OUTPUT.pdb
@@ -327,8 +442,7 @@ if [ -n "$structure" ]; then
             source="$workDir/pbc.pdb"
             ;;
         mol)
-            run_trjconv "$centerGroup System" -f "$structure" \
-                -o "$workDir/pbc.pdb" -pbc mol -center -ur compact
+            centre_on_group "$structure" "$workDir/pbc.pdb"
             source="$workDir/pbc.pdb"
             ;;
     esac
@@ -356,17 +470,15 @@ fi
 if [ -n "$trajectory" ]; then
     extension="${trajectoryOut##*.}"
 
-    # 1. Whole molecules in every frame (of the frames kept by -skip).
-    run_trjconv "System" -f "$trajectory" -o "$workDir/whole.$extension" \
-        -pbc whole -skip "$skip"
-    result="$workDir/whole.$extension"
-
-    # 2. Centred, molecules in the box (as the structure).
+    # Whole molecules in every frame (of the frames kept by -skip), and
+    # for -pbc mol centred and in the box (as the structure).
     if [ "$pbc" = mol ]; then
-        run_trjconv "$centerGroup System" -f "$workDir/whole.$extension" \
-            -o "$workDir/mol.$extension" -pbc mol -center -ur compact
-        rm "$workDir/whole.$extension"
         result="$workDir/mol.$extension"
+        centre_on_group "$trajectory" "$result" -skip "$skip"
+    else
+        result="$workDir/whole.$extension"
+        run_trjconv "System" -f "$trajectory" -o "$result" \
+            -pbc whole -skip "$skip"
     fi
 fi
 

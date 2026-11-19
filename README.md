@@ -81,7 +81,7 @@ mvis prep STRUCTURE [TRAJECTORY]
 | `-s FILE` | run input file (`.tpr`): the bonds come from it | name of the structure + `.tpr` |
 | `-n FILE` | index file, with the groups `System` and the centre group | `index.ndx` next to the structure |
 | `-pbc LEVEL` | `none` (coordinates untouched), `whole` (molecules made whole), `mol` (whole, centred, molecules back in the box) | `mol` |
-| `-cg GROUP` | index group put in the centre of the box | `Lipids` |
+| `-cg GROUP` | index group whose centre of mass is held still in the middle of the box (see "Centring") | `Lipids` |
 | `-skip N` | keep 1 frame out of N (smaller file for a slow connection) | `1` |
 | `-cylinder FILE` | chain coordinate runs: the `NAME_cylinder.xvg` to prepare (see "The chain coordinate cylinder") | the one next to the trajectory or the structure, if any |
 | `-glass` | also run MartiniGlass (see below) | off |
@@ -98,6 +98,20 @@ visualization/
   03_equilibrate_cylinder.xvg, _slices.dat, _frames.dat, _cylinder_beads.ndx
                               only for a run with cylinder files
 ```
+
+**Centring (`-pbc mol`).** The centre of mass of the `-cg` group is held
+still in the middle of the box, and every molecule is put back into the
+box whole. The group is followed without jumps (`trjconv -pbc nojump
+-fit translation`). `trjconv -center` is not used, because it centres
+the middle between the outermost atoms of the group. That point moves
+whenever a lipid crosses the box edge. For membranes spanning the box,
+the picture shook by about 0.5 nm per frame. When a membrane touched a
+box face (a stalk run), the whole box jumped by 6 nm. What still happens,
+and cannot be avoided in a periodic box: a single molecule that leaves
+through one face comes back in through the opposite one. If the box
+changes a lot during the run, the group stays still and the box edges
+move around it (it sits in the middle of the mean box). Any group works
+as `-cg`, also one split over the box edges in the first frame.
 
 ### 2. View (laptop)
 
